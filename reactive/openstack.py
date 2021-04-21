@@ -131,7 +131,10 @@ def create_or_update_loadbalancers():
         layer.status.blocked(str(e))
 
 
-@hook('stop')
+@hook("stop")
 def cleanup():
-    # TODO: Also clean up removed LBs as they go away
-    layer.openstack.cleanup()
+    layer.status.maintenance("Cleaning load balancers")
+    for _, cached_info in layer.openstack.get_all_cached_lbs().items():
+        lb = layer.openstack.LoadBalancer.load_from_cached(cached_info)
+        lb.delete()
+        hookenv.log("loadbalancer '{}' was deleted".format(lb.name))

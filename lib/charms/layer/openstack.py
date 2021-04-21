@@ -19,6 +19,8 @@ from charmhelpers.core.unitdata import kv
 from charms.layer import status
 
 
+CACHED_LB_PREFIX = "created_lbs"
+
 # When debugging hooks, for some reason HOME is set to /home/ubuntu, whereas
 # during normal hook execution, it's /root. Set it here to be consistent.
 os.environ['HOME'] = '/root'
@@ -146,6 +148,19 @@ def detect_octavia():
     return False
 
 
+def _default_subnet(members):
+    """Find the subnet which contains the given address."""
+    address, _ = members[0]
+    address = ip_address(address)
+    for subnet_info in _openstack('subnet', 'list'):
+        subnet = ip_network(subnet_info['Subnet'])
+        if address in subnet:
+            return subnet_info['Name']
+    else:
+        log_err('Unable to find subnet for {}', address)
+        raise OpenStackLBError(action='create', exc=False)
+
+
 def manage_loadbalancer(app_name, members):
     log('Managing load balancer for {}', app_name)
     subnet = config['lb-subnet'] or _default_subnet(members)
@@ -153,31 +168,10 @@ def manage_loadbalancer(app_name, members):
     port = str(config['lb-port'])
     lb_algorithm = config['lb-method']
     manage_secgrps = config['manage-security-groups']
-    lb = LoadBalancer.get_or_create(app_name,
-                                    port,
-                                    subnet,
-                                    lb_algorithm,
-                                    fip_net,
-                                    manage_secgrps)
-    lb.update_members(members)
-    return lb
-
-
-def cleanup():
-    # note: we don't bother cleaning up the SG because it's a singleton
-    # and can be reused in other / future deployments
-    lbmanager = LoadBalancer('cleanup', None, None, None, None, None)
-    for lb in lbmanager.get_all():
-        try:
-            log("Deleting loadbalancer '{}'".format(lb['name']))
-            _openstack('loadbalancer', 'delete', '--cascade', lb['name'],
-                       yaml_output=False)
-        except OpenStackLBError:
-            log_err("Unable to delete loadbalancer '{}'".
-                    format(lb.get('name', 'unknown')))
-            # we're dying anyway, so we can't report this, but maybe we can
-            # delete the rest
-            pass
+    lb_manager = LoadBalancer.get_or_create(
+        app_name, port, subnet, lb_algorithm, fip_net, manage_secgrps)
+    lb_manager.update_members(members)
+    return lb_manager
 
 
 class OpenStackError(Exception):
@@ -341,21 +335,6 @@ def _determine_version(attrs, endpoint):
         return None
 
 
-def _default_subnet(members):
-    """
-    Find the subnet which contains the given address.
-    """
-    address, _ = members[0]
-    address = ip_address(address)
-    for subnet_info in _openstack('subnet', 'list'):
-        subnet = ip_network(subnet_info['Subnet'])
-        if address in subnet:
-            return subnet_info['Name']
-    else:
-        log_err('Unable to find subnet for {}', address)
-        raise OpenStackLBError(action='create', exc=False)
-
-
 def _is_base64(s):
     """
     Verify is the utf8 encoded string is base64 encoded or not
@@ -365,6 +344,11 @@ def _is_base64(s):
         return b64encode(b64decode(s)) == s
     except Exception:
         return False
+
+
+def get_all_cached_lbs():
+    """Get all cached loadbalancer."""
+    return kv().getrange("{}.".format(CACHED_LB_PREFIX))
 
 
 class LoadBalancer:
@@ -389,16 +373,24 @@ class LoadBalancer:
                 raise OpenStackLBError(action='create')
         return lb
 
+    @classmethod
+    def load_from_cached(cls, cached_info):
+        """Load loadbalancer from cached information."""
+        if not cached_info:
+            raise OpenStackLBError(action="load")
+
+        return cls(cached_info["app_name"], cached_info["port"],
+                   cached_info["subnet"], cached_info["algorithm"],
+                   cached_info["fip_net"], cached_info["manage_secgrps"])
+
     def __init__(self, app_name, port, subnet, algorithm, fip_net,
                  manage_secgrps):
-        self.name = 'openstack-integrator-{}-{}'.format(MODEL_SHORT_ID,
-                                                        app_name)
+        self.app_name = app_name
         self.port = port
         self.subnet = subnet
         self.algorithm = algorithm
         self.fip_net = fip_net
         self.manage_secgrps = manage_secgrps
-        self._key = 'created_lbs.{}'.format(self.name)
         self.sg_id = None
         self.member_sg_id = None
         self.fip = None
@@ -409,6 +401,15 @@ class LoadBalancer:
         # cache this since we access it multiple times
         self.is_port_sec_enabled = self._impl.get_port_sec_enabled()
         self._try_load_cached_info()
+
+    @property
+    def key(self):
+        return "{}.{}".format(CACHED_LB_PREFIX, self.name)
+
+    @property
+    def name(self):
+        return "openstack-integrator-{}-{}".format(MODEL_SHORT_ID,
+                                                   self.app_name)
 
     def get_all(self):
         lbs = []
@@ -531,11 +532,13 @@ class LoadBalancer:
         self.is_created = True
 
     def _wait_not_pending(self, show_func):
+        lb_status = None
         for retry in range(30):
             lb_status = show_func()['provisioning_status']
             if not lb_status.startswith('PENDING_'):
                 break
             time.sleep(2)
+
         if lb_status != 'ACTIVE':
             log_err('Invalid status when creating load balancer {}: {}',
                     self.name, lb_status)
@@ -632,26 +635,15 @@ class LoadBalancer:
                                       self.address, port)
 
     def delete(self):
-        """
-        Delete this loadbalancer and all of its resources.
-        """
+        """Delete this loadbalancer and all of its resources."""
         try:
-            # this would be easier if we could rely on --cascade,
-            # but it's not available with neutron
-            if self.fip:
-                self._impl.delete_fip()
-            for member in self.members:
-                self._impl.delete_member(member)
-            self._impl.delete_pool()
-            self._impl.delete_listener()
-            if self.sg_id:
-                self._impl.delete_secgrp()
             self._impl.delete_loadbalancer()
+            self._remove_cached_info()
         except subprocess.CalledProcessError:
-            raise OpenStackLBError(action='delete')
+            raise OpenStackLBError(action="delete")
 
     def _try_load_cached_info(self):
-        info = kv().get(self._key)
+        info = kv().get(self.key)
         if info:
             self.sg_id = info['sg_id']
             self.fip = info['fip']
@@ -666,12 +658,21 @@ class LoadBalancer:
             self.is_created = True
 
     def _update_cached_info(self):
-        kv().set(self._key, {
-            'sg_id': self.sg_id,
-            'fip': self.fip,
-            'address': self.address,
-            'members': list(self.members),
+        kv().set(self.key, {
+            "app_name": self.app_name,
+            "port": self.port,
+            "subnet": self.subnet,
+            "algorithm": self.algorithm,
+            "fip_net": self.fip_net,
+            "manage_secgrps": self.manage_secgrps,
+            "sg_id": self.sg_id,
+            "fip": self.fip,
+            "address": self.address,
+            "members": list(self.members),
         })
+
+    def _remove_cached_info(self):
+        kv().unset(self.key)
 
 
 class BaseLBImpl:
@@ -709,17 +710,16 @@ class BaseLBImpl:
 
     def get_port_sec_enabled(self):
         subnet_info = _openstack('subnet', 'show', self.subnet)
-        network_info = _openstack('network', 'show', subnet_info['network_id'])
+        network_info = _openstack('network', 'show',
+                                  subnet_info['network_id'])
         return network_info['port_security_enabled']
 
     def set_port_secgrp(self, port_id, sg_id):
-        # nb: can't use _openstack() because the command
-        # doesn't support --format=yaml
-        _run_with_creds('openstack', 'port',
-                        'set', '--security-group', sg_id, port_id)
+        _openstack('port', 'set', '--security-group', sg_id, port_id,
+                   yaml_output=False)
 
     def list_fips(self):
-        return _openstack('floating', 'ip', 'list')
+        return _openstack('floating', 'ip', 'list', '--network', self.fip_net)
 
     def create_fip(self, address, port_id):
         fip = _openstack('floating', 'ip', 'create',
@@ -747,6 +747,9 @@ class BaseLBImpl:
         raise NotImplementedError()
 
     def show_loadbalancer(self):
+        raise NotImplementedError()
+
+    def delete_loadbalancer(self):
         raise NotImplementedError()
 
     def list_listeners(self):
@@ -796,6 +799,10 @@ class OctaviaLBImpl(BaseLBImpl):
     def show_loadbalancer(self):
         return _openstack('loadbalancer', 'show', self.name)
 
+    def delete_loadbalancer(self):
+        _openstack('loadbalancer', 'delete', '--cascade', self.name,
+                   yaml_output=False)
+
     def list_listeners(self):
         return _openstack('loadbalancer', 'listener', 'list')
 
@@ -841,10 +848,8 @@ class OctaviaLBImpl(BaseLBImpl):
 
     def delete_member(self, member):
         addr, _ = member
-        # nb: can't use _openstack() because member delete appears to be the
-        # only command that doesn't support --format=yaml
-        _run_with_creds('openstack', 'loadbalancer',
-                        'member', 'delete', self.name, addr)
+        _openstack('loadbalancer', 'member', 'delete', self.name, addr,
+                   yaml_output=False)
 
 
 class NeutronLBImpl(BaseLBImpl):
@@ -862,6 +867,21 @@ class NeutronLBImpl(BaseLBImpl):
 
     def show_loadbalancer(self):
         return _neutron('lbaas-loadbalancer-show', self.name)
+
+    def delete_loadbalancer(self):
+        for fip in self.list_fips():
+            self.delete_fip(fip)
+
+        for member in self.list_members():
+            self.delete_member(member)
+
+        self.delete_pool()
+        self.delete_listener()
+        if self.manage_secgrps:
+            sg_id = self.find_secgrp(self.name)
+            self.delete_secgrp(sg_id)
+
+        return _neutron('lbaas-loadbalancer-delete', self.name)
 
     def list_listeners(self):
         return _neutron('lbaas-listener-list')
