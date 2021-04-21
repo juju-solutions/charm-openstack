@@ -1,15 +1,20 @@
 from distutils.util import strtobool
 from charmhelpers.core import hookenv
+from charmhelpers.contrib.charmsupport import nrpe
 from charms.reactive import (
     hook,
+    when,
     when_all,
     when_any,
     when_not,
     is_flag_set,
+    set_flag,
     toggle_flag,
     clear_flag,
 )
 from charms.reactive.relations import endpoint_from_name
+
+import nrpe_helpers
 
 from charms import layer
 
@@ -127,6 +132,8 @@ def create_or_update_loadbalancers():
             lb = layer.openstack.manage_loadbalancer(request.application_name,
                                                      request.members)
             request.set_address_port(lb.fip or lb.address, lb.port)
+
+            set_flag("loadbalancers.changed")
     except layer.openstack.OpenStackError as e:
         layer.status.blocked(str(e))
 
@@ -135,3 +142,45 @@ def create_or_update_loadbalancers():
 def cleanup():
     # TODO: Also clean up removed LBs as they go away
     layer.openstack.cleanup()
+
+
+@when("nrpe-external-master.available")
+@when_not("nrpe-external-master.initial-config")
+def initial_nrpe_config():
+    update_nrpe_config(initialized=True)
+    hookenv.log("NRPE checks were initialized", level=hookenv.INFO)
+    set_flag("nrpe-external-master.initial-config")
+
+
+@when("nrpe-external-master.available")
+@when_any("config.changed.nagios_context",
+          "config.changed.nagios_servicegroups",
+          "nrpe-external-master.reconfigure",
+          *nrpe_helpers.NRPE_CONFIG_FLAGS_CHANGED)
+def update_nrpe_config(initialized=False):
+    """Set up all NRPE checks."""
+    hostname = nrpe.get_nagios_hostname()
+    nrpe_setup = nrpe.NRPE(hostname=hostname)
+    nrpe_helpers.write_nagios_openstack_cnf()
+
+    nrpe_helpers.update_openstack_interface_check(nrpe_setup, initialized)
+    nrpe_helpers.update_openstack_loadbalancer_check(nrpe_setup)
+
+    clear_flag("loadbalancers.changed")
+    hookenv.log("NRPE checks were updated.", level=hookenv.DEBUG)
+
+
+@when_not("nrpe-external-master.available")
+@when("nrpe-external-master.initial-config")
+def remove_nrpe_config():
+    """Remove all NRPE checks and related scripts."""
+    hostname = nrpe.get_nagios_hostname()
+    nrpe_setup = nrpe.NRPE(hostname=hostname)
+
+    nrpe_helpers.remove_openstack_interface_check(nrpe_setup)
+    nrpe_helpers.remove_openstack_loadbalancer_check(nrpe_setup)
+
+    nrpe_helpers.remove_nagios_openstack_cnf()
+    clear_flag("nrpe-external-master.initial-config")
+    clear_flag("loadbalancers.changed")
+    hookenv.log("NRPE checks was removed.", level=hookenv.DEBUG)

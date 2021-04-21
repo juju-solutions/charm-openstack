@@ -3,12 +3,15 @@ includes:
   - 'layer:basic'
   - 'layer:status'
   - 'layer:snap'
+  - 'layer:nagios'
   - 'interface:openstack-integration'
   - 'interface:public-address'
   - 'interface:keystone-credentials'
 options:
   basic:
     use_venv: true
+    packages:
+      - python3-openstackclient
   snap:
     openstackclients:
       channel: stable
