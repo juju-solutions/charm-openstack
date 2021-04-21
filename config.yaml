@@ -136,3 +136,72 @@ options:
       will use the upstream default.
     type: boolean
     default: null
+  nrpe-network-ids:
+    description: |
+      List of OpenStack networks IDs to be checked by NRPE check. All values
+      must be separated by a comma or 'all' can be entered.
+    type: string
+    default: "all"
+  nrpe-skip-network-ids:
+    description: |
+      List of OpenStack networks IDs to be skipped by the NRPE check.
+      All values must be separated by a comma. The condition for using this
+      option is to set "nrpe-network-ids" to "all" or this value will raise
+      an error.
+    type: string
+    default: ""
+  nrpe-subnet-ids:
+    description: |
+      List of OpenStack subnets IDs to be checked by NRPE check. All values
+      must be separated by a comma and the value `all` is not allowed.
+    type: string
+    default: ""
+  nrpe-port-ids:
+    description: |
+      List of OpenStack ports IDs to be checked by NRPE check. All values
+      must be separated by a comma or 'all' can be entered.
+    type: string
+    default: "all"
+  nrpe-skip-port-ids:
+    description: |
+      List of OpenStack ports IDs to be skipped by the NRPE check.
+      All values must be separated by a comma. The condition for using this
+      option is to set "nrpe-port-ids" to "all" or this value will raise
+      an error.
+    type: string
+    default: ""
+  nrpe-floating-ip-ids:
+    description: |
+      List of OpenStack floating ips IDs to be checked by NRPE check. All
+      values must be separated by a comma or 'all' can be entered.
+    type: string
+    default: "all"
+  nrpe-skip-floating-ip-ids:
+    description: |
+      List of OpenStack floating ips IDs to be skipped by the NRPE check.
+      All values must be separated by a comma. The condition for using
+      this option is to set "nrpe-floating-ip-ids" to "all" or this value
+      will raise an error.
+    type: string
+    default: ""
+  nrpe-server-ids:
+    description: |
+      List of OpenStack servers IDs to be checked by NRPE check. All values
+      must be separated by a comma or 'all' can be entered.
+    type: string
+    default: "all"
+  nrpe-skip-server-ids:
+    description: |
+      List of OpenStack servers IDs to be skipped by the NRPE check.
+      All values must be separated by a comma. The condition for using this
+      option is to set "nrpe-server-ids" to "all" or this value will raise
+      an error.
+    type: string
+    default: ""
+  nrpe-security-group-ids:
+    description: |
+      List of OpenStack security group IDs to be checked by NRPE check.
+      All values must be separated by a comma and the value `all` is not
+      allowed.
+    type: string
+    default: ""

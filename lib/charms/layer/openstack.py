@@ -277,8 +277,13 @@ def _load_creds():
     return kv().get('charm.openstack.full-creds')
 
 
-def _run_with_creds(*args):
-    creds = _load_creds()
+def get_creds_env(creds):
+    """Get environment variables from credentials.
+
+    :returns: dictionary contain all environment variables parsed from
+              credentials
+    :rtype: Dict[str, str]
+    """
     env = {
         'PATH': os.pathsep.join(['/snap/bin', os.environ['PATH']]),
         'OS_AUTH_URL': creds['auth_url'],
@@ -300,6 +305,12 @@ def _run_with_creds(*args):
     if CA_CERT_FILE.exists():
         env['OS_CACERT'] = str(CA_CERT_FILE)
 
+    return env
+
+
+def _run_with_creds(*args):
+    creds = _load_creds()
+    env = get_creds_env(creds)
     result = subprocess.run(args,
                             env=env,
                             check=True,

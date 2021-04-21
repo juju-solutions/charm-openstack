@@ -1,15 +1,21 @@
 from distutils.util import strtobool
 from charmhelpers.core import hookenv
+from charmhelpers.contrib.charmsupport import nrpe
 from charms.reactive import (
     hook,
+    when,
     when_all,
     when_any,
     when_not,
     is_flag_set,
     toggle_flag,
     clear_flag,
+    set_flag,
 )
+
 from charms.reactive.relations import endpoint_from_name
+
+import nrpe_helpers
 
 from charms import layer
 
@@ -135,3 +141,75 @@ def create_or_update_loadbalancers():
 def cleanup():
     # TODO: Also clean up removed LBs as they go away
     layer.openstack.cleanup()
+
+
+@when("nrpe-external-master.available")
+@when_not("nrpe-external-master.initial-config")
+def initial_nrpe_config():
+    update_nrpe_config(initialized=True)
+    hookenv.log("NRPE checks were initialized", level=hookenv.INFO)
+    set_flag("nrpe-external-master.initial-config")
+
+
+@when("nrpe-external-master.available")
+@when_any("config.changed.nagios_context",
+          "config.changed.nagios_servicegroups",
+          "nrpe-external-master.reconfigure",
+          *nrpe_helpers.NRPE_CONFIG_FLAGS_CHANGED)
+def update_nrpe_config(initialized=False):
+    """Set up all NRPE checks."""
+    config = hookenv.config()
+    hostname = nrpe.get_nagios_hostname()
+    nrpe_setup = nrpe.NRPE(hostname=hostname)
+    nrpe_helpers.write_nagios_openstack_cnf()
+    layer.nagios.install_nagios_plugin_from_file(
+        "files/nagios/plugins/check_openstack_interface.py",
+        nrpe_helpers.NRPE_OPENSTACK_INTERFACE)
+
+    for check in nrpe_helpers.NRPE_CHECKS:
+        cmd = nrpe_helpers.create_nrpe_check_cmd(check)
+        if (config.get(check.config) and (config.changed(check.config) or
+                                          config.changed(check.config_skip) or
+                                          initialized)):
+            nrpe_setup.add_check(
+                shortname=check.name,
+                description="Check {}s: {}".format(check.interface,
+                                                   config.get(check.config)),
+                check_cmd=cmd)
+            hookenv.log("NRPE check {} was added".format(check.name),
+                        level=hookenv.DEBUG)
+        elif not config.get(check.config) and config.changed(check.config):
+            nrpe_setup.remove_check(shortname=check.name, description="",
+                                    check_cmd=cmd)
+            hookenv.log("NRPE check {} was removed".format(check.name),
+                        level=hookenv.DEBUG)
+
+    nrpe_setup.write()
+    hookenv.log("NRPE checks were updated.", level=hookenv.DEBUG)
+
+
+@when_not("nrpe-external-master.available")
+@when("nrpe-external-master.initial-config")
+def remove_nrpe_config():
+    """Remove all NRPE checks and related scripts."""
+    config = hookenv.config()
+    hostname = nrpe.get_nagios_hostname()
+    nrpe_setup = nrpe.NRPE(hostname=hostname)
+
+    for check in nrpe_helpers.NRPE_CHECKS:
+        cmd = nrpe_helpers.create_nrpe_check_cmd(check)
+
+        if config.get(check.config):
+            nrpe_setup.remove_check(
+                shortname=check.name,
+                description="",
+                check_cmd=cmd
+            )
+            hookenv.log("NRPE check {} was removed".format(check.name),
+                        level=hookenv.DEBUG)
+
+    nrpe_setup.write()
+    layer.nagios.remove_nagios_plugin(nrpe_helpers.NRPE_OPENSTACK_INTERFACE)
+    nrpe_helpers.remove_nagios_openstack_cnf()
+    clear_flag("nrpe-external-master.initial-config")
+    hookenv.log("NRPE checks was removed.", level=hookenv.DEBUG)
