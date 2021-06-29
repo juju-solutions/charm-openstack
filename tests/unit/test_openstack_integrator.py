@@ -214,8 +214,8 @@ def test_get_or_create(create, cms, ams, kv):
         openstack.LoadBalancer.get_or_create(*args)
 
 
-def test_create_new(impl, log_err):
-    openstack.kv().get.return_value = None
+def test_create_new(impl, log_err, kv):
+    kv().get.return_value = None
     lb = openstack.LoadBalancer('app', '80', 'subnet', 'alg', None, False)
     assert not lb.is_created
     lb.name = 'name'
@@ -271,8 +271,8 @@ def test_create_new(impl, log_err):
     impl.create_fip.assert_called_with('1.1.1.1', '4321')
 
 
-def test_create_recover(impl):
-    openstack.kv().get.return_value = None
+def test_create_recover(impl, kv):
+    kv().get.return_value = None
     lb = openstack.LoadBalancer('app', '80', 'subnet', 'alg', 'net', True)
     lb.name = 'name'
     impl.list_loadbalancers.return_value = [{'name': 'name'}]

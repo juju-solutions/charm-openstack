@@ -1,0 +1,45 @@
+name: Run tests with Tox
+
+on: [push]
+
+jobs:
+  unit-tests:
+    name: Lint, Unit Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: [3.6, 3.7, 3.8, 3.9]
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v2
+      - name: Setup Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install Dependencies
+        run: pip install tox
+      - name: Run lint
+        run: tox -vve lint
+      - name: Run test
+        run: tox -e unit
+
+  integration-tests:
+    name: Integration test with Microstack
+    runs-on: self-hosted
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v2
+      - name: Setup Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.9
+      - name: Setup operator environment
+        uses: charmed-kubernetes/actions-operator@master
+        with:
+          provider: microstack
+      - name: Create custum flavor to save resources
+        run: openstack flavor show m2.medium || openstack flavor create --vcpus 4 --ram 4096 --disk 20 m2.medium
+      - name: source Microstack credentials
+        run: source /var/snap/microstack/common/etc/microstack.rc
+      - name: Run test
+        run: tox -e integration
